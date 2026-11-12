@@ -43,10 +43,11 @@ Model availability and API quotas depend on the Groq account.
 Install Python 3.10 or newer. Download and extract this repository.
 Open PowerShell in the extracted folder, then run:
 
-powershell
+```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501
+```
 
 
 Open http://localhost:8501.

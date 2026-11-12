@@ -1,7 +1,6 @@
-"""Review Insight: run with streamlit run app.py."""
+"""Review Insight: customer review analysis using Groq."""
 
 import json
-import os
 
 import pandas as pd
 import streamlit as st
@@ -16,6 +15,9 @@ from core import (
     read_reviews,
 )
 
+
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 SAMPLE_REVIEWS = [
     "The cappuccino tasted rich and smooth.",
@@ -44,7 +46,7 @@ SAMPLE_REVIEWS = [
     "Please add more vegan options to the menu.",
 ]
 
-# Evaluation reviews are separate from the examples in prompts.py.
+# These evaluation examples differ from the examples in prompts.py.
 BENCHMARK_ITEMS = [
     ("The waiter ignored us for half an hour.", "service", "negative"),
     ("The cashier patiently explained every option.", "service", "positive"),
@@ -71,7 +73,9 @@ BENCHMARK = [
         "expected_topic": topic,
         "expected_sentiment": sentiment,
     }
-    for number, (text, topic, sentiment) in enumerate(BENCHMARK_ITEMS, 1)
+    for number, (text, topic, sentiment) in enumerate(
+        BENCHMARK_ITEMS, 1
+    )
 ]
 
 
@@ -83,40 +87,81 @@ st.set_page_config(
 
 st.title("💬 Review Insight")
 st.write("Turn customer reviews into evidence-backed business priorities.")
+st.caption("AI provider: Groq")
+
 
 with st.sidebar:
-    st.header("AI settings")
+    st.header("Groq settings")
 
     api_key = st.text_input(
-        "Gemini API key",
+        "Groq API key",
         type="password",
-        value=os.getenv("OPENAI_API_KEY", ""),
-    )
-    st.caption(
-        "Your key is not included in reports. API calls may incur charges."
+        key="review_groq_api_key",
+        help="Enter an active API key from Groq Console.",
     )
 
-    model = st.text_input("Model", value="gemini-2.5-flash")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
+    st.caption(
+        "Your key is used for this session and is not included in "
+        "downloaded reports. Free-tier availability and quotas depend "
+        "on your Groq account and selected model."
+    )
+
+    model = st.text_input(
+        "Groq model",
+        value=DEFAULT_MODEL,
+        key="review_groq_model",
+    )
+
+    temperature = st.slider(
+        "Temperature",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.2,
+        step=0.1,
+    )
+
     max_tokens = st.slider(
-        "Maximum output tokens per call", 500, 6000, 2500, 250
+        "Maximum output tokens per call",
+        min_value=500,
+        max_value=6000,
+        value=6000,
+        step=250,
     )
-    batch_size = st.slider("Reviews per API call", 1, 10, 8)
+
+    batch_size = st.slider(
+        "Reviews per API call",
+        min_value=1,
+        max_value=10,
+        value=4,
+    )
 
     st.caption(
-        "The selected model must support Chat Completions, JSON output, "
-        "temperature, and max_tokens."
+        "Smaller batches reduce the amount processed per request. "
+        "Some models include reasoning tokens in the output allowance. "
+        "Model availability and account limits can change."
     )
+
+    with st.expander("Connection details"):
+        st.write("Provider: Groq")
+        st.code(GROQ_ENDPOINT, language=None)
+        st.caption(
+            "The OpenAI Python package is used as a compatible client. "
+            "Requests are sent to Groq, not OpenAI."
+        )
 
     if st.button("Clear saved results"):
-        for key in ["analysis", "original_reviews", "experiment"]:
-            st.session_state.pop(key, None)
+        for name in [
+            "analysis",
+            "original_reviews",
+            "experiment",
+        ]:
+            st.session_state.pop(name, None)
         st.rerun()
 
 
 def make_settings():
     return Settings(
-        model=model,
+        model=model.strip(),
         temperature=temperature,
         max_tokens=max_tokens,
         batch_size=batch_size,
@@ -125,14 +170,53 @@ def make_settings():
 
 def make_client():
     if not api_key.strip():
-        raise ReviewError("Enter your OpenAI API key in the sidebar.")
+        raise ReviewError(
+            "Enter your Groq API key in the sidebar."
+        )
 
     return OpenAI(
         api_key=api_key.strip(),
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        base_url=GROQ_ENDPOINT,
         timeout=40.0,
         max_retries=0,
     )
+
+
+def show_error(error):
+    """Display useful guidance for errors raised by core.py."""
+    message = str(error)
+    lowered = message.lower()
+
+    if "authentication failed" in lowered:
+        st.error(
+            "Groq rejected the credentials. Clear the key field and "
+            "paste an active Groq key directly from Groq Console. "
+            "Do not use an OpenAI or Gemini key."
+        )
+
+    elif "api rejected these settings" in lowered:
+        st.error(
+            "Groq rejected the request settings. Check that the model "
+            "is available in your Groq project. Also confirm core.py "
+            "uses max_completion_tokens in the API call."
+        )
+
+    else:
+        st.error(message)
+
+    if any(
+        phrase in lowered
+        for phrase in [
+            "rate-limit",
+            "rate limit",
+            "timeout",
+            "connection",
+        ]
+    ):
+        st.caption(
+            "Check your internet connection and your Groq account's "
+            "quota. Wait before retrying if a limit has been reached."
+        )
 
 
 analysis_tab, experiment_tab, guide_tab = st.tabs([
@@ -140,6 +224,7 @@ analysis_tab, experiment_tab, guide_tab = st.tabs([
     "Prompt laboratory",
     "Project guide",
 ])
+
 
 with analysis_tab:
     source = st.radio(
@@ -152,8 +237,13 @@ with analysis_tab:
 
     if source == "Sample cafe reviews":
         reviews = [
-            {"id": f"R{number:03}", "text": text}
-            for number, text in enumerate(SAMPLE_REVIEWS, 1)
+            {
+                "id": f"R{number:03}",
+                "text": text,
+            }
+            for number, text in enumerate(
+                SAMPLE_REVIEWS, 1
+            )
         ]
 
         st.caption(
@@ -161,7 +251,7 @@ with analysis_tab:
         )
 
         sample_csv = pd.DataFrame({
-            "review": SAMPLE_REVIEWS
+            "review": SAMPLE_REVIEWS,
         }).to_csv(index=False)
 
         st.download_button(
@@ -176,33 +266,47 @@ with analysis_tab:
             "Upload a UTF-8 CSV: up to 2 MB and 100 reviews",
             type=["csv"],
         )
-        column = st.text_input("Review column name", value="review")
+
+        column = st.text_input(
+            "Review column name",
+            value="review",
+        )
 
         if upload is not None:
             try:
                 reviews, skipped = read_reviews(
-                    upload.getvalue(), column
+                    upload.getvalue(),
+                    column,
                 )
-                st.caption(f"Skipped {skipped} blank review rows.")
-            except ReviewError as exc:
-                st.error(str(exc))
+
+                st.caption(
+                    f"Skipped {skipped} blank review rows."
+                )
+
+            except ReviewError as error:
+                st.error(str(error))
 
     if reviews:
         st.dataframe(
             pd.DataFrame(reviews),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
+
         st.caption(
-            f"{len(reviews)} reviews ready. Duplicate inputs count separately."
+            f"{len(reviews)} reviews ready. "
+            "Duplicate inputs count separately."
         )
 
     consent = st.checkbox(
-        "I understand these reviews will be sent to Google Gemini."
+        "I understand these reviews will be sent to Groq.",
+        key="review_groq_consent",
     )
+
     st.caption(
-        "Remove names, emails, and other personal information before "
-        "uploading. The app sends review text as provided."
+        "Remove names, emails, and other personal or confidential "
+        "information before uploading. Review Groq's current data-use "
+        "terms. The app sends review text as provided."
     )
 
     if st.button(
@@ -215,7 +319,10 @@ with analysis_tab:
 
         progress = st.progress(
             0.0,
-            text="Classifying reviews, then preparing recommendations...",
+            text=(
+                "Classifying reviews, then preparing "
+                "recommendations..."
+            ),
         )
 
         try:
@@ -229,16 +336,21 @@ with analysis_tab:
                     progress=progress.progress,
                 )
 
+            result["metadata"]["provider"] = "Groq"
+            result["metadata"]["endpoint"] = GROQ_ENDPOINT
+
             st.session_state["analysis"] = result
             st.session_state["original_reviews"] = reviews
 
-        except ReviewError as exc:
-            st.error(str(exc))
+        except ReviewError as error:
+            show_error(error)
+
         except Exception:
             st.error(
-                "Unexpected failure. Check your configuration and retry. "
-                "No partial report was saved."
+                "Unexpected analysis failure. Check your configuration "
+                "and retry. No partial report was saved."
             )
+
         finally:
             progress.empty()
 
@@ -247,6 +359,7 @@ with analysis_tab:
 
         st.divider()
         st.subheader("Saved analysis")
+
         st.caption(
             "Changing inputs or settings does not update this report. "
             "Click Analyze feedback to generate a new report."
@@ -254,16 +367,24 @@ with analysis_tab:
 
         left, middle, right = st.columns(3)
 
-        left.metric("Reviews analyzed", len(result["labels"]))
+        left.metric(
+            "Reviews analyzed",
+            len(result["labels"]),
+        )
 
         complaint_count = sum(
             row["sentiment"] in ["negative", "mixed"]
             for row in result["labels"]
         )
-        middle.metric("Reviews with complaint signals", complaint_count)
+
+        middle.metric(
+            "Reviews with complaint signals",
+            complaint_count,
+        )
 
         right.metric(
-            "API tokens used", result["metadata"]["total_tokens"]
+            "API tokens used",
+            result["metadata"]["total_tokens"],
         )
 
         st.subheader("Overview")
@@ -273,48 +394,73 @@ with analysis_tab:
 
         with topic_column:
             st.subheader("Primary topics")
+
             st.bar_chart(
-                pd.Series(result["counts"]["topics"], name="Reviews")
+                pd.Series(
+                    result["counts"]["topics"],
+                    name="Reviews",
+                )
             )
 
         with sentiment_column:
             st.subheader("Sentiment")
+
             st.bar_chart(
                 pd.Series(
-                    result["counts"]["sentiments"], name="Reviews"
+                    result["counts"]["sentiments"],
+                    name="Reviews",
                 )
             )
 
         st.caption(
-            "Each review receives one primary topic. Negative and mixed "
-            "sentiments both count as complaint signals."
+            "Each review receives one primary topic. Negative and "
+            "mixed sentiments both count as complaint signals."
         )
 
         st.subheader("Prioritized recommendations")
-        evidence = {row["id"]: row for row in result["labels"]}
 
-        for number, action in enumerate(result["report"]["actions"], 1):
+        evidence = {
+            row["id"]: row
+            for row in result["labels"]
+        }
+
+        for number, action in enumerate(
+            result["report"]["actions"], 1
+        ):
             with st.container(border=True):
-                st.markdown(f"**{number}. {action['title']}**")
+                st.markdown(
+                    f"*{number}. {action['title']}*"
+                )
+
                 st.write(action["recommendation"])
+
                 st.caption(
-                    "Proposed success measure: " + action["success_metric"]
+                    "Proposed success measure: "
+                    + action["success_metric"]
                 )
 
                 for review_id in action["evidence_ids"]:
                     st.text(
-                        f"{review_id}: {evidence[review_id]['quote']}"
+                        f"{review_id}: "
+                        f"{evidence[review_id]['quote']}"
                     )
 
-        with st.expander("Inspect classifications and original reviews"):
-            table = pd.DataFrame(result["labels"]).merge(
-                pd.DataFrame(st.session_state["original_reviews"]),
+        with st.expander(
+            "Inspect classifications and original reviews"
+        ):
+            table = pd.DataFrame(
+                result["labels"]
+            ).merge(
+                pd.DataFrame(
+                    st.session_state["original_reviews"]
+                ),
                 on="id",
             )
+
             st.dataframe(
                 table,
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
         with st.expander("Run settings and metadata"):
@@ -329,15 +475,21 @@ with analysis_tab:
 
         st.download_button(
             "Download full analysis (.json)",
-            json.dumps(result, indent=2),
+            json.dumps(
+                result,
+                indent=2,
+                ensure_ascii=False,
+            ),
             file_name="review-insight-analysis.json",
             mime="application/json",
         )
 
         st.info(
-            "AI interpretations can be wrong. Evidence quotes are checked "
-            "against the input, but recommendations still need human review."
+            "AI interpretations can be wrong. Evidence quotes are "
+            "checked against the input, but recommendations still "
+            "need human review."
         )
+
 
 with experiment_tab:
     st.subheader("Compare prompting techniques")
@@ -348,32 +500,55 @@ with experiment_tab:
     )
 
     st.caption(
-        "Both variants use your sidebar settings. Expected answer labels "
-        "are excluded from the prompts sent to the model."
+        "Both variants use your sidebar settings. Expected answer "
+        "labels are excluded from the prompts sent to Groq."
     )
 
     with st.expander("Inspect the evaluation dataset"):
-        st.dataframe(pd.DataFrame(BENCHMARK), hide_index=True)
+        st.dataframe(
+            pd.DataFrame(BENCHMARK),
+            hide_index=True,
+            width="stretch",
+        )
 
-    st.warning(
-        "Running this experiment sends the synthetic benchmark to OpenAI "
-        "twice and may incur API charges."
+    experiment_consent = st.checkbox(
+        "I understand the synthetic benchmark will be sent to Groq "
+        "for both prompt variants.",
+        key="review_groq_experiment_consent",
     )
 
-    if st.button("Run prompt comparison"):
+    st.caption(
+        "The comparison makes multiple API requests and uses your "
+        "account's quota. Paid usage may incur charges if enabled."
+    )
+
+    if st.button(
+        "Run prompt comparison",
+        disabled=not experiment_consent,
+    ):
         st.session_state.pop("experiment", None)
 
         try:
             settings = make_settings()
 
-            with st.spinner("Running both prompt variants..."):
+            with st.spinner(
+                "Running both prompt variants..."
+            ):
                 with make_client() as api:
-                    experiment = compare(api, BENCHMARK, settings)
+                    experiment = compare(
+                        api,
+                        BENCHMARK,
+                        settings,
+                    )
+
+            experiment["provider"] = "Groq"
+            experiment["endpoint"] = GROQ_ENDPOINT
 
             st.session_state["experiment"] = experiment
 
-        except ReviewError as exc:
-            st.error(str(exc))
+        except ReviewError as error:
+            show_error(error)
+
         except Exception:
             st.error(
                 "The experiment could not complete. "
@@ -385,60 +560,104 @@ with experiment_tab:
 
         scores = [
             {
-                key: value
-                for key, value in row.items()
-                if key != "predictions"
+                name: value
+                for name, value in row.items()
+                if name != "predictions"
             }
             for row in experiment["results"]
         ]
 
-        st.dataframe(pd.DataFrame(scores), hide_index=True)
-        st.caption(
-            "Accuracy ranges from 0 to 1. For example, 0.75 means 75% "
-            "agreement with the expected labels."
+        st.dataframe(
+            pd.DataFrame(scores),
+            hide_index=True,
+            width="stretch",
         )
+
+        st.caption(
+            "Accuracy ranges from 0 to 1. For example, 0.75 means "
+            "75% agreement with the expected labels."
+        )
+
         st.caption(experiment["note"])
 
-        with st.expander("Inspect predictions and experiment settings"):
+        with st.expander(
+            "Inspect predictions and experiment settings"
+        ):
             st.json(experiment)
 
         st.download_button(
             "Download experiment results",
-            json.dumps(experiment, indent=2),
+            json.dumps(
+                experiment,
+                indent=2,
+                ensure_ascii=False,
+            ),
             file_name="prompt-experiment.json",
             mime="application/json",
         )
 
     st.info(
-        "For your presentation: run at temperature 0.2, download results, "
-        "then try 0.7 and save again. Compare errors, accuracy, and token "
-        "usage. A more elaborate prompt is not guaranteed to score higher."
+        "For your presentation: run at temperature 0.2 and download "
+        "the results. Then try 0.7 and save again. Compare errors, "
+        "accuracy, time, and token usage. A more elaborate prompt "
+        "is not guaranteed to score higher."
     )
 
+
 with guide_tab:
-    st.subheader("How this project works")
-
     st.markdown("""
-1. **Input:** preview synthetic reviews or upload a CSV.
-2. **Classification:** the AI assigns a topic, sentiment, and evidence quote.
-3. **Validation:** Python checks IDs, labels, and exact evidence quotations.
-4. **Aggregation:** Python calculates counts.
-5. **Recommendations:** a second AI call proposes evidence-linked actions.
-6. **Export:** download the report, analysis, and real experiment results.
+### How this project works
 
-**Two prompt techniques:** role assignment and few-shot examples, defined
-in `prompts.py`. The Prompt laboratory compares these with zero-shot
-instructions.
+1. *Input:* preview synthetic reviews or upload a CSV.
+2. *Classification:* the model assigns a topic, sentiment, and evidence quote.
+3. *Validation:* Python checks IDs, labels, and exact evidence quotations.
+4. *Aggregation:* Python calculates counts.
+5. *Recommendations:* a second API request proposes evidence-linked actions.
+6. *Export:* download reports, analyses, and actual experiment results.
 
-**Adjustable settings:** model, temperature, maximum output tokens,
-and batch size.
+### Prompt techniques
 
-**Error handling:** invalid uploads, missing API keys, authentication
-failures, timeouts, rate limits, invalid output, and unsupported settings.
+*Role assignment:* the model acts as a customer-experience analyst.
 
-**Limitations:** one primary topic per review; subjective classifications;
-a small synthetic evaluation dataset; recommendations require human review.
+*Few-shot prompting:* examples demonstrate how reviews should be classified.
 
-**Files:** `app.py` contains the interface, `core.py` handles processing,
-and `prompts.py` contains the AI instructions.
+The Prompt laboratory compares these techniques with zero-shot instructions.
+
+### Adjustable settings
+
+Model, temperature, maximum output tokens, and batch size.
+
+### Connection
+
+This app uses Groq's OpenAI-compatible API endpoint.
+
+The Python client remains named OpenAI, but requests are sent to Groq.
+The openai/ prefix in the default model name identifies the model family;
+it does not change the API provider.
+
+Use an active Groq API key created in Groq Console.
+
+### Error handling
+
+The processing code handles invalid uploads, missing keys,
+authentication failures, timeouts, rate limits, invalid output,
+and unsupported settings.
+
+### Limitations
+
+Each review receives one primary topic. Classifications can be subjective.
+The evaluation dataset is small and synthetic.
+
+Exact quote validation does not guarantee correct interpretation.
+Recommendations require human review.
+
+Model availability and free-tier quotas depend on Groq's current
+offerings and your account.
+
+### Project files
+
+- app.py: interface, sample data, and Groq connection.
+- core.py: processing, API calls, validation, counts, and reports.
+- prompts.py: instructions and examples sent to the model.
+- requirements.txt: Python dependencies.
 """)
